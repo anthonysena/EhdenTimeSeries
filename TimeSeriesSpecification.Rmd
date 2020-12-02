@@ -1,0 +1,122 @@
+---
+title: "EHDEN Time Series Analysis"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(graphics)
+```
+
+# Time Series Analysis
+
+This document aims to describe the pipeline for assembiling the necessary data for performing time series analysis using the OMOP Common Data Model. 
+
+**TODO**: Perhaps point back to the EHDEN deliverables for motivations, RMM description, etc. 
+
+## Analysis Pipeline Specification
+
+This section will describe the analytical pipeline used to construct the data used by the time series methods. At a high level, this will consist of inputs, processing code and outputs.
+
+### Inputs
+
+The following inputs are required for the analysis pipeline:
+
+1. Cohort definitions: One or more cohort definitions as described in the [Book Of OHDSI](https://ohdsi.github.io/TheBookOfOhdsi/Cohorts.html). Cohorts will represent the population(s) of interest for performing the time series analysis. When the cohort definition is executed, the resulting data structure is represented as:
+
+
+| cohort_definition_id | subject_id | cohort_start_date | cohort_end_date |
+|-|-|-|-|
+| 1 | 10001 | 1/1/2000 | 12/31/2010 |
+| 1 | 10003 | 12/1/2004 | 5/1/2019 |
+| 2 | 1002 | 11/1/1996 | 5/1/2000 |
+
+
+
+2. Arguments that follow the [ts](https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/ts) function in R. Specifically:
+
+- `start`
+- `end`
+- `frequency` or `deltat`
+
+_Please see the ts documentation for details on these parameters_
+
+Since this analysis will run against the OMOP CDM, a database connection and supporting information are required:
+
+- `connectionDetails`: The database connection details as described in https://ohdsi.github.io/DatabaseConnector/
+- `cdmDatabaseSchema`: The database schema that holds the patient-level data transformed to the OMOP CDM
+- `cohortDatabaseSchema`: The database schema that is used to hold the cohorts that are generated to perform the analysis. Write access is required to this schema to create the necessary database tables for processing the analysis.
+- `cohortTable`: The cohort table name to hold the resulting cohorts
+- `oracleTempSchema`: The database schema to use for holding temporary tables if using the Oracle RDMBS platform. Otherwise this is NULL
+- `databaseId`: The database identifier to use for holding the results
+- `databaseName`: The friendly database name that is used for reporting
+- `databaseDescription`: A description of the database for reporting
+- `minCellCount`: The minimum # of data points used to use in the time series analysis. 
+
+### Processing Code
+
+The processing process will consist of the following steps:
+
+- Cohort construction: iterate through the cohort definitions specified, generate them against the OMOP CDM and store the results in the `cohortDatabaseSchema`.`cohortTable`
+- Retrieve patient-level data: This will consist of the following sub-steps:
+  - Query the `cohortDatabaseSchema`.`cohortTable` and read the results into an R data frame for analysis
+  - Query the `cdmDatabaseSchema`.observation_period table to obtain the MIN(observation_period_start_date) and MAX(observation_period_end_date). This information will be used to define the range of data coverage in the CDM.
+- Construct the time series data: Aggregate the cohort data into a `data.frame` and/or `ts` object for use in the time series methods. **NOTE**: This step will require input based on the various time series methods implemented.
+
+Constructing the time series data using the arguments from the [ts](https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/ts) function has some advantages. First, the cohort data may have gaps at specific time intervals. The use of `ts()` will allow us to construct an object that fills in all dates for a given range and then `merge` this with our aggregated cohort data to correctly identify where data is missing and potentially censored using the `minCellCount`. Secondly, there are a number of time series methods already implemented in R and many of them take an object of class `ts`.
+
+### Output
+
+The resulting `data` object will have the following properties:
+
+- `data$cohort`: The data obtained from querying the `cohortDatabaseSchema`.`cohortTable` table. **NOTE**: We may want to exclude this or do some aggregation on this data on the DB side but that is to be discussed.
+- `data$observationPeriod`: The min/max data as obtained in the processing code described above.
+- `data$ts`: The time series data as transformed to a `ts` class. **NOTE**: It may be easier/better to provide this as a `data.frame` and transform to a `ts` object downstream in the methods. 
+
+
+### Example
+
+We'll use the [OHDSI Eunomia](https://github.com/OHDSI/Eunomia) data set to provide a working example of how this pipeline will work. Let's start by connecting to the Eunomia
+
+```{r}
+library(Eunomia)
+connectionDetails <- getEunomiaConnectionDetails()
+connection <- connect(connectionDetails)
+```
+
+Next we'll construct an example cohort using the `drug_exposure` table:
+
+```{r}
+patientLevelData <- querySql(connection, "SELECT 1 as cohort_definition_id, person_id as subject_id, drug_exposure_start_date as cohort_start_date, drug_exposure_end_date as cohort_end_date FROM drug_exposure LIMIT 10;", snakeCaseToCamelCase = TRUE)
+```
+
+Then we'll assemble the min/max observation period information and disconnect from the DB:
+
+```{r}
+observationPeriodBounds <- querySql(connection, "SELECT MIN(observation_period_start_date) min_obs_start, MAX(observation_period_end_date) max_obs_end FROM observation_period", snakeCaseToCamelCase = TRUE)
+disconnect(connection)
+```
+
+Next we can interrogate the patient level data to get the min/max year of the members of the cohort for use in constructing the time series data frame:
+
+```{r}
+# TODO: This example should perform the following steps:
+# Given a data frame of cohort(s), obtain counts of patients based on the cohort_start_date
+# and fill in any date gaps with 0's to feed into the ts object
+library(dplyr)
+# Note: This operation should be done per cohort but in this case
+# we are only considering a single cohort for simplicity. Additionally,
+# the example here is constructing by year and this would reuqire expansion
+# to cover other time intervals
+minCohortStart <- as.numeric(min(format(as.Date(patientLevelData$cohortStartDate), "%Y")))
+maxCohortStart <- as.numeric(max(format(as.Date(patientLevelData$cohortStartDate), "%Y")))
+tsByYear <- ts(data = patientLevelData %>% count(cohortStartDate),
+               start = minCohortStart,
+               end = maxCohortStart,
+               frequency = 1)
+print(tsByYear)
+```
+ 
+

@@ -1,0 +1,27 @@
+DBMS:
+sqlite
+
+Error:
+near "10": syntax error
+
+SQL:
+SELECT TOP 10 * FROM drug_exposure;
+
+R version:
+R version 3.6.3 (2020-02-29)
+
+Platform:
+x86_64-w64-mingw32
+
+Attached base packages:
+- stats
+- graphics
+- grDevices
+- utils
+- datasets
+- methods
+- base
+
+Other attached packages:
+- Eunomia (1.0.1)
+- DatabaseConnector (2.4.1)
